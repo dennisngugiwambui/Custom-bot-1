@@ -1,0 +1,1142 @@
+/**
+ * UVO Order Assistant - Content Script
+ * 
+ * This script runs in the context of UVO Corp pages to automatically
+ * monitor and take new orders based on user configuration.
+ * Improved with hard page refresh and order counting
+ */
+
+// Bot state
+let botState = {
+    isRunning: false,
+    isProcessingOrder: false,
+    ordersTaken: 0,
+    ordersAvailable: 0,
+    ordersNew: 0,
+    lastCheck: null,
+    knownOrderIds: new Set(),
+    checkIntervalId: null,
+    refreshIntervalId: null,
+    refreshCountdown: 0,
+    config: {
+      checkInterval: 2000,      // Check every 2 seconds
+      refreshInterval: 5000,    // Page refresh every 5 seconds
+      minTimeHours: 5,          // Orders must have at least 5 hours remaining
+      soundAlert: true,         // Play sound on new order
+      autoPause: true,          // Auto-pause when leaving orders page
+      hardRefresh: true         // Use hard page refresh instead of iframe
+    }
+  };
+  
+  // Debug logging (will be logged to the console)
+  function debugLog(message) {
+    console.log(`[UVO Assistant] ${message}`);
+  }
+  
+  // Initialize - called when the script is first loaded
+  function initialize() {
+    debugLog('Content script initialized');
+    
+    // Create styles for notifications and UI elements
+    createStyles();
+    
+    // Check if we're on an orders page
+    const onOrdersPage = isOrdersPage();
+    
+    // Send initial page status
+    chrome.runtime.sendMessage({
+      action: 'pageStatusChange',
+      isOnOrdersPage: onOrdersPage
+    });
+    
+    // Set up URL change detection
+    setupUrlChangeDetection();
+    
+    // Load saved state
+    chrome.storage.local.get('botState', function(result) {
+      debugLog('Loaded saved state: ' + JSON.stringify(result.botState));
+      
+      if (result.botState) {
+        // Update config
+        if (result.botState.config) {
+          botState.config = { ...botState.config, ...result.botState.config };
+        }
+        
+        // Update stats
+        if (result.botState.ordersTaken) {
+          botState.ordersTaken = result.botState.ordersTaken;
+        }
+        
+        if (result.botState.ordersAvailable !== undefined) {
+          botState.ordersAvailable = result.botState.ordersAvailable;
+        }
+        
+        if (result.botState.ordersNew !== undefined) {
+          botState.ordersNew = result.botState.ordersNew;
+        }
+        
+        // Auto-start if it was running and we're on an orders page
+        if (result.botState.isRunning && onOrdersPage) {
+          startBot();
+        }
+      }
+    });
+  }
+  
+  // Create CSS styles for notifications and UI
+  function createStyles() {
+    const styleElement = document.createElement('style');
+    styleElement.textContent = `
+      .uvo-notification {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        background-color: #4f46e5;
+        color: white;
+        padding: 16px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        z-index: 10000;
+        display: flex;
+        align-items: center;
+        max-width: 320px;
+        animation: uvo-slide-in 0.3s ease-out forwards;
+      }
+      
+      .uvo-notification-icon {
+        margin-right: 12px;
+        font-size: 24px;
+      }
+      
+      .uvo-notification-content {
+        flex: 1;
+      }
+      
+      .uvo-notification-title {
+        font-weight: bold;
+        margin-bottom: 4px;
+      }
+      
+      .uvo-notification-message {
+        font-size: 14px;
+        opacity: 0.9;
+      }
+      
+      .uvo-notification-close {
+        background: none;
+        border: none;
+        color: white;
+        opacity: 0.7;
+        cursor: pointer;
+        font-size: 18px;
+        padding: 0;
+        margin-left: 8px;
+      }
+      
+      .uvo-notification-close:hover {
+        opacity: 1;
+      }
+      
+      @keyframes uvo-slide-in {
+        from { transform: translateX(100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+      
+      @keyframes uvo-slide-out {
+        from { transform: translateX(0); opacity: 1; }
+        to { transform: translateX(100%); opacity: 0; }
+      }
+      
+      .uvo-notification.uvo-closing {
+        animation: uvo-slide-out 0.3s ease-in forwards;
+      }
+      
+      .uvo-spinner {
+        position: fixed;
+        bottom: 20px;
+        left: 20px;
+        background-color: rgba(79, 70, 229, 0.9);
+        color: white;
+        padding: 8px 16px;
+        border-radius: 20px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+        z-index: 10000;
+        display: flex;
+        align-items: center;
+        font-size: 14px;
+        font-weight: 500;
+      }
+      
+      .uvo-spinner-icon {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        border-radius: 50%;
+        border-top-color: white;
+        animation: uvo-spin 1s linear infinite;
+        margin-right: 8px;
+      }
+      
+      @keyframes uvo-spin {
+        to { transform: rotate(360deg); }
+      }
+      
+      .uvo-refresh-countdown {
+        margin-left: 8px;
+        font-size: 12px;
+        opacity: 0.8;
+      }
+      
+      .uvo-hidden-iframe {
+        position: absolute;
+        width: 0;
+        height: 0;
+        border: 0;
+        visibility: hidden;
+      }
+      
+      .uvo-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 0.5);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 9999;
+      }
+      
+      .uvo-overlay-content {
+        background-color: white;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        text-align: center;
+        max-width: 80%;
+      }
+      
+      .uvo-overlay-icon {
+        font-size: 48px;
+        color: #4f46e5;
+        margin-bottom: 16px;
+      }
+      
+      .uvo-overlay-message {
+        font-size: 18px;
+        margin-bottom: 12px;
+      }
+      
+      .uvo-overlay-spinner {
+        display: inline-block;
+        width: 32px;
+        height: 32px;
+        border: 3px solid rgba(79, 70, 229, 0.3);
+        border-radius: 50%;
+        border-top-color: #4f46e5;
+        animation: uvo-spin 1s linear infinite;
+        margin: 16px 0;
+      }
+    `;
+    
+    document.head.appendChild(styleElement);
+  }
+  
+  // Set up detection for URL changes
+  function setupUrlChangeDetection() {
+    // Store current URL
+    let lastUrl = location.href;
+    
+    // Set up observer to detect URL changes
+    new MutationObserver(() => {
+      if (location.href !== lastUrl) {
+        lastUrl = location.href;
+        
+        // Check if we're on an orders page
+        const onOrdersPage = isOrdersPage();
+        
+        // Send page status to popup
+        chrome.runtime.sendMessage({
+          action: 'pageStatusChange',
+          isOnOrdersPage: onOrdersPage
+        });
+        
+        // Auto-pause if we left the orders page and auto-pause is enabled
+        if (!onOrdersPage && botState.isRunning && botState.config.autoPause) {
+          debugLog('Left orders page, auto-pausing bot');
+          stopBot();
+        }
+      }
+    }).observe(document, { subtree: true, childList: true });
+  }
+  
+  // Check if current page is an orders page
+  function isOrdersPage() {
+    return window.location.href.includes('/orders/available') || 
+           window.location.href.includes('/orders/all');
+  }
+  
+  // Check if current page is an order detail page
+  function isOrderDetailPage() {
+    return window.location.href.includes('/order/') && 
+           !window.location.href.includes('/orders/');
+  }
+  
+// Show notification
+function showNotification(title, message, type = 'info', duration = 5000) {
+    // Create notification element
+    const notification = document.createElement('div');
+    notification.className = 'uvo-notification';
+    
+    // Icon based on type
+    let iconClass = 'fas fa-info-circle';
+    if (type === 'success') iconClass = 'fas fa-check-circle';
+    if (type === 'warning') iconClass = 'fas fa-exclamation-triangle';
+    if (type === 'error') iconClass = 'fas fa-times-circle';
+    
+    // Build HTML
+    notification.innerHTML = `
+      <div class="uvo-notification-icon">
+        <i class="${iconClass}"></i>
+      </div>
+      <div class="uvo-notification-content">
+        <div class="uvo-notification-title">${title}</div>
+        <div class="uvo-notification-message">${message}</div>
+      </div>
+      <button class="uvo-notification-close">&times;</button>
+    `;
+    
+    // Add to page
+    document.body.appendChild(notification);
+    
+    // Set up close button
+    const closeButton = notification.querySelector('.uvo-notification-close');
+    closeButton.addEventListener('click', () => {
+      notification.classList.add('uvo-closing');
+      setTimeout(() => {
+        if (notification.parentNode) {
+          notification.parentNode.removeChild(notification);
+        }
+      }, 300);
+    });
+    
+    // Auto-close after duration
+    if (duration > 0) {
+      setTimeout(() => {
+        if (notification.parentNode) {
+          notification.classList.add('uvo-closing');
+          setTimeout(() => {
+            if (notification.parentNode) {
+              notification.parentNode.removeChild(notification);
+            }
+          }, 300);
+        }
+      }, duration);
+    }
+    
+    return notification;
+  }
+  
+  // Show overlay during page refresh
+  function showRefreshOverlay() {
+    // Remove any existing overlay
+    const existingOverlay = document.querySelector('.uvo-overlay');
+    if (existingOverlay) {
+      existingOverlay.parentNode.removeChild(existingOverlay);
+    }
+  
+    // Create overlay
+    const overlay = document.createElement('div');
+    overlay.className = 'uvo-overlay';
+    
+    // Add content
+    overlay.innerHTML = `
+      <div class="uvo-overlay-content">
+        <div class="uvo-overlay-icon">
+          <i class="fas fa-sync-alt"></i>
+        </div>
+        <div class="uvo-overlay-message">
+          Refreshing page to check for new orders...
+        </div>
+        <div class="uvo-overlay-spinner"></div>
+      </div>
+    `;
+    
+    // Add to page
+    document.body.appendChild(overlay);
+    
+    return overlay;
+  }
+  
+  // Toggle spinner that shows when bot is active
+  function toggleBotSpinner(show) {
+    // Remove existing spinner if any
+    const existingSpinner = document.querySelector('.uvo-spinner');
+    if (existingSpinner) {
+      existingSpinner.parentNode.removeChild(existingSpinner);
+    }
+    
+    if (show) {
+      const spinner = document.createElement('div');
+      spinner.className = 'uvo-spinner';
+      spinner.innerHTML = `
+        <div class="uvo-spinner-icon"></div>
+        <span>UVO Assistant Active</span>
+        <span class="uvo-refresh-countdown"></span>
+      `;
+      document.body.appendChild(spinner);
+      
+      // Initialize countdown
+      updateRefreshCountdown();
+    }
+  }
+  
+  // Update countdown display
+  function updateRefreshCountdown() {
+    const countdownElement = document.querySelector('.uvo-refresh-countdown');
+    if (countdownElement && botState.isRunning) {
+      countdownElement.textContent = `(Refresh in ${botState.refreshCountdown}s)`;
+    }
+  }
+  
+  // Log messages (to extension and console)
+  function log(message, type = 'info') {
+    debugLog(`[${type.toUpperCase()}] ${message}`);
+    
+    // Send to popup
+    chrome.runtime.sendMessage({
+      action: 'addLog',
+      message,
+      type
+    });
+  }
+  
+  // Update stats in popup
+  function updateStats() {
+    chrome.runtime.sendMessage({
+      action: 'updateStats',
+      stats: {
+        ordersTaken: botState.ordersTaken,
+        ordersAvailable: botState.ordersAvailable,
+        ordersNew: botState.ordersNew,
+        lastCheck: botState.lastCheck,
+        isOnOrdersPage: isOrdersPage()
+      }
+    });
+  }
+  
+  // Check if order has enough time remaining
+  function hasEnoughTimeRemaining(orderRow) {
+    const timeRemainingElement = orderRow.querySelector('.time-order-major');
+    if (!timeRemainingElement) {
+      log('Could not find time remaining element', 'warning');
+      return false;
+    }
+    
+    const timeText = timeRemainingElement.textContent.trim();
+    
+    // Parse time format like "6h 45m"
+    const hoursMatch = timeText.match(/(\d+)h/);
+    const hours = hoursMatch ? parseInt(hoursMatch[1]) : 0;
+    
+    // Check if time remaining meets minimum
+    if (hours >= botState.config.minTimeHours) {
+      log(`Order has ${hours} hours remaining, meets minimum of ${botState.config.minTimeHours} hours`);
+      return true;
+    } else {
+      log(`Order only has ${hours} hours remaining, below minimum of ${botState.config.minTimeHours} hours`);
+      return false;
+    }
+  }
+  
+  // Scan current orders on page
+  function scanCurrentOrders() {
+    // Get all order rows
+    const orderElements = document.querySelectorAll('.order-link');
+    let orderCount = 0;
+    let newOrderCount = 0;
+    
+    orderElements.forEach(orderElement => {
+      const orderRow = orderElement.querySelector('ul');
+      if (orderRow) {
+        const orderId = orderRow.getAttribute('data-order_id');
+        if (orderId) {
+          botState.knownOrderIds.add(orderId);
+          orderCount++;
+          
+          // Count new orders
+          if (orderRow.classList.contains('new')) {
+            newOrderCount++;
+            log(`Found existing 'new' order: ${orderId}`);
+          }
+        }
+      }
+    });
+    
+    // Update counts
+    botState.ordersAvailable = orderCount;
+    botState.ordersNew = newOrderCount;
+    
+    log(`Initial scan found ${orderCount} orders (${newOrderCount} new)`);
+    updateStats();
+  }
+  
+  // Play notification sound - New order found
+  function playNewOrderSound() {
+    try {
+      // Create audio element with base64 encoded notification sound (higher pitched)
+      const audio = new Audio('data:audio/wav;base64,UklGRigCAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQCAACBgIF/gn6Df4B+gn2EfYN8g3yAfX5/fXt7e3p7fXx9fX18fH19fX18fHx9fXx9fHt9fX1+fn1+f4CBgoOGhIaGhoeGhYWEgYGAfXp5dm9raWNcV1VORT46NCsnIh4aFxMPDAkGAwEA/vz7+vj39/X09PPy8vLy8/T19fb3+fr7/P3+//8AAQEDAwUFBgcICAkKCw0NDg8QERIUFRYXGBkaHB0eHyEjJCUnKCkrLC4vMTIzNTc4OTs8PT9AQUJDREVGR0hJSUpLTU1OT1BSU1RVVldYWVpbXF1eX2BhYWJjZGRlZmZnZ2hpaWpqa2tsbG1tbm9vb3BwcXFycnNzc3R0dHV1dXV2dnZ2d3d3d3h4eHl5eXl6enp6ent7e3t8fHx8fX19fX5+fn5/f39/gICAgIGBgYGCgoKCg4ODg4SEhISFhYWFhoaGhoeHh4eIiIiIiYmJiYqKioqLi4uLjIyMjI2NjY2Ojo6Oj4+Pj5CQkJCRkZGRkpKSkpOTk5OUlJSUlZWVlZaWlpaXl5eXmJiYmJmZmZmampqam5ubm5ycnJydnZ2dnp6enp+fn5+goKCgoaGhoaKioqKjo6OjpKSkpKWlpaWmpqampqamp6enp6ioqKipqammpqamp6enpqWlpaSjo6Kgn56cmZmYlpWUkpKRkI+PkJGSk5WWmJqbnZ6foKChop+enZuamZeWlZSTkpKRkZCQkJCPj4+Pjo6Ojo2NjY2MjIyMi4uLi4qKioqJiYmJiIiIiIeHh4eGhoaGhYWFhYSEhISEhISEhISEhISEhISEhISEhISEhISEhISE');
+      
+      // Play the sound
+      audio.play().catch(err => {
+        console.error('Failed to play sound:', err);
+      });
+    } catch (err) {
+      console.error('Error creating sound:', err);
+    }
+  }
+  
+  // Play notification sound - Order taken
+  function playOrderTakenSound() {
+    try {
+      // Create audio element with base64 encoded notification sound (success sound)
+      const audio = new Audio('data:audio/wav;base64,UklGRqYDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YYMCAAB9fX19gIKEhoiKioqIhoSDgX58enl4d3Z1dHNvbGpoZ2ZmZmdoaWtucHJ0dnl6fHx9fX17enh2dHJwbmxqaGZlZGNjZGVmaWtucHJ0dnl7fH1+fn18e3p4d3VzcXBubGtqaWhoaGhpam1ucXN1d3l7fX5/f39/fn18e3l4dnVzcnFwbm1sa2tqaWlpamprbG1ucHFydHV3eHp7fH19fX18e3p5eHd2dXRzcnFwcG9ubm5tbGxsbGxtbW5ub3BxcnN0dXZ3eHl6ent7e3t7e3t6enl5eHh3d3Z2dXV0dHNzc3JycnFxcXFwcXFxcXFxcnJyc3N0dHR1dXZ2dnZ3d3d3d3d3d3d2dnZ2dXV1dHR0c3NzcnJycXFxcHBwcHBwcHBwcHBwcHBwcXFxcXJycnJzc3Nzc3NzdHR0dHR0dHRzc3NzcnJycXFxcHBwb29vbm5ubm5ubm5ubm5ubm9vb3BwcHBxcXFxcnJycnJyc3Nzc3Nzc3NzcnJycnFxcXBwcG9vb25ubm1tbW1sbGxsbGxsbGxsbGxsbGxsbG1tbW1ubm5ub29vb3BwcHBwcXFxcXFxcXFxcXFwcHBwb29vb25ubm5tbW1tbGxsbGxsbGxsbGxsbGxsbGxsbGxsbGxsbW1tbW1tbW1ubm5ubm5ub29vb29vb29vb29vb29vbm5ubm5ubm5ubm5ubm1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbG1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1ubm5ubm5ubm5ubm5ub25tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbWxsbGxsbGxsbGxsbGxsampqbGxsbGxsbWxpampqbGxsbGxsbGxsampqaGhoaGhoaGhqampqampqampqampqampqampqampqampqamlpaWlpampqampqampqampqampqampqampqamlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpamlqamtra2tsbA==');
+      
+      // Play the sound
+      audio.play().catch(err => {
+        console.error('Failed to play sound:', err);
+      });
+    } catch (err) {
+      console.error('Error creating sound:', err);
+    }
+  }
+  
+  // Create hidden iframe for stealth refresh (for when hardRefresh is disabled)
+  function createHiddenIframe() {
+    // Remove any existing iframe
+    const existingIframe = document.getElementById('uvo-refresh-iframe');
+    if (existingIframe) {
+      existingIframe.remove();
+    }
+    
+    // Create new iframe
+    const iframe = document.createElement('iframe');
+    iframe.id = 'uvo-refresh-iframe';
+    iframe.className = 'uvo-hidden-iframe';
+    iframe.src = window.location.href;
+    
+    // Add event listener for when iframe loads
+    iframe.addEventListener('load', () => {
+      checkIframeForNewOrders(iframe);
+    });
+    
+    // Add to page
+    document.body.appendChild(iframe);
+    
+    return iframe;
+  }
+  
+  // Check iframe for new orders
+  function checkIframeForNewOrders(iframe) {
+    try {
+      const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+      
+      // Make sure we have access to iframe content (same-origin policy)
+      if (!iframeDoc) {
+        log('Cannot access iframe content - same-origin policy restriction', 'error');
+        return;
+      }
+      
+      // Get all order rows in the iframe
+      const allOrderRows = iframeDoc.querySelectorAll('.order-link ul');
+      log(`Found ${allOrderRows.length} order rows in background refresh`);
+      
+      // Get new orders count
+      const newOrderRows = iframeDoc.querySelectorAll('.order-link ul.row.new');
+      log(`Found ${newOrderRows.length} 'new' order rows in background refresh`);
+      
+      // Update order counts
+      botState.ordersAvailable = allOrderRows.length;
+      botState.ordersNew = newOrderRows.length;
+      updateStats();
+      
+      // Process any new orders found in the iframe
+      let newOrderFound = false;
+      
+      for (const orderRow of newOrderRows) {
+        const orderId = orderRow.getAttribute('data-order_id');
+        
+        if (orderId && !botState.knownOrderIds.has(orderId)) {
+          // Check if the order has enough time remaining
+          const timeRemainingElement = orderRow.querySelector('.time-order-major');
+          if (!timeRemainingElement) continue;
+          
+          const timeText = timeRemainingElement.textContent.trim();
+          const hoursMatch = timeText.match(/(\d+)h/);
+          const hours = hoursMatch ? parseInt(hoursMatch[1]) : 0;
+          
+          if (hours >= botState.config.minTimeHours) {
+            log(`Found new eligible order in background: ${orderId}`, 'success');
+            newOrderFound = true;
+            
+            // Find the corresponding element in the main document
+            const mainOrderLink = findMainOrderElement(orderId);
+            
+            if (mainOrderLink) {
+              // Process this order
+              processOrder(mainOrderLink, orderId);
+              
+              // Only process one order at a time
+              break;
+            } else {
+              // If we can't find it in the main document, we need to do a full refresh
+              log('Order found in background but not in main document, refreshing', 'warning');
+              
+              // Save the order ID so we can process it after refresh
+              sessionStorage.setItem('uvoNewOrderId', orderId);
+              
+              // Do a full refresh
+              window.location.reload();
+              return;
+            }
+          } else {
+            log(`Skipping new order ${orderId} in background - insufficient time`, 'warning');
+            botState.knownOrderIds.add(orderId);
+          }
+        }
+      }
+      
+      // If no new orders were found, update the main page's known order IDs
+      if (!newOrderFound) {
+        // Add all order IDs from iframe to known orders
+        allOrderRows.forEach(row => {
+          const orderId = row.getAttribute('data-order_id');
+          if (orderId) {
+            botState.knownOrderIds.add(orderId);
+          }
+        });
+      }
+    } catch (error) {
+      log(`Error checking iframe: ${error.message}`, 'error');
+    } finally {
+      // Remove the iframe after we're done with it
+      if (iframe && iframe.parentNode) {
+        iframe.parentNode.removeChild(iframe);
+      }
+    }
+  }
+  
+  // Find order element in main document
+  function findMainOrderElement(orderId) {
+    const allOrderRows = document.querySelectorAll('.order-link ul');
+    for (const row of allOrderRows) {
+      if (row.getAttribute('data-order_id') === orderId) {
+        return row.closest('.order-link');
+      }
+    }
+    return null;
+  }
+  
+  // Hard refresh the page
+  function performHardRefresh() {
+    if (!botState.isRunning || !isOrdersPage() || botState.isProcessingOrder) {
+      return;
+    }
+    
+    log('Performing hard page refresh to check for new orders', 'info');
+    
+    // Store important state in session storage
+    sessionStorage.setItem('uvoAssistantReload', 'true');
+    sessionStorage.setItem('uvoAssistantKnownOrders', JSON.stringify(Array.from(botState.knownOrderIds)));
+    
+    // Show overlay to prevent flashing
+    showRefreshOverlay();
+    
+    // Perform actual reload after a short delay to ensure overlay is visible
+    setTimeout(() => {
+      window.location.reload();
+    }, 300);
+  }
+  
+  // Background refresh without reloading the page (iframe method) or hard refresh
+  function backgroundRefresh() {
+    if (!botState.isRunning || !isOrdersPage() || botState.isProcessingOrder) {
+      return;
+    }
+    
+    // Reset countdown
+    botState.refreshCountdown = Math.floor(botState.config.refreshInterval / 1000);
+    updateRefreshCountdown();
+    
+    // Use different refresh methods based on configuration
+    if (botState.config.hardRefresh) {
+      performHardRefresh();
+    } else {
+      log('Performing iframe refresh to check for new orders', 'info');
+      createHiddenIframe();
+    }
+  }
+  
+  // Check for new orders in the current page
+  function checkForNewOrders() {
+    if (botState.isProcessingOrder) {
+      log('Skipping check - already processing an order');
+      return;
+    }
+    
+    if (!isOrdersPage()) {
+      log('Not on orders page, stopping bot', 'warning');
+      stopBot();
+      return;
+    }
+    
+    // Update last check time
+    botState.lastCheck = new Date().toISOString();
+    updateStats();
+    
+    // Update refresh countdown
+    if (botState.refreshCountdown > 0) {
+      botState.refreshCountdown--;
+      updateRefreshCountdown();
+    }
+    
+    // Check for pending order from session storage
+    const pendingOrderId = sessionStorage.getItem('uvoNewOrderId');
+    if (pendingOrderId && !botState.knownOrderIds.has(pendingOrderId)) {
+      // Find the order element
+      const orderLink = findMainOrderElement(pendingOrderId);
+      
+      if (orderLink) {
+        // Process this order
+        log(`Processing pending order ${pendingOrderId} after refresh`, 'success');
+        processOrder(orderLink, pendingOrderId);
+        
+        // Clear the pending order
+        sessionStorage.removeItem('uvoNewOrderId');
+        return;
+      } else {
+        // If we can't find it, clear the pending order
+        sessionStorage.removeItem('uvoNewOrderId');
+      }
+    }
+    
+    // Get all order rows
+    const allOrderRows = document.querySelectorAll('.order-link ul');
+    const newOrderRows = document.querySelectorAll('.order-link ul.row.new');
+    
+    // Update order counts
+    botState.ordersAvailable = allOrderRows.length;
+    botState.ordersNew = newOrderRows.length;
+    updateStats();
+    
+    // Log check
+    log(`Checking for new orders at ${new Date().toLocaleTimeString()} - Found ${allOrderRows.length} orders (${newOrderRows.length} new)`);
+    
+    // Process new orders
+    let newOrderFound = false;
+    
+    for (const orderRow of newOrderRows) {
+      const orderId = orderRow.getAttribute('data-order_id');
+      const parentLink = orderRow.closest('.order-link');
+      
+      if (orderId && !botState.knownOrderIds.has(orderId) && parentLink) {
+        // Check if the order has enough time remaining
+        if (hasEnoughTimeRemaining(orderRow)) {
+          log(`Found new eligible order: ${orderId}`, 'success');
+          newOrderFound = true;
+          
+          // Process this order
+          processOrder(parentLink, orderId);
+          
+          // Only process one order at a time
+          break;
+        } else {
+          log(`Skipping new order ${orderId} - insufficient time`, 'warning');
+          botState.knownOrderIds.add(orderId);
+        }
+      } else if (orderId) {
+        // Make sure all orders are known
+        botState.knownOrderIds.add(orderId);
+      }
+    }
+    
+    if (!newOrderFound) {
+      log('No new eligible orders found in this check');
+    }
+  }
+  
+  // Process a single order
+  async function processOrder(orderLink, orderId) {
+    botState.isProcessingOrder = true;
+    
+    try {
+      // Add to known orders
+      botState.knownOrderIds.add(orderId);
+      
+      // Show notification
+      showNotification('New Order Found', `Processing order #${orderId}`, 'info');
+      
+      // Play sound if enabled - different sound for new order found
+      if (botState.config.soundAlert) {
+        playNewOrderSound();
+      }
+      
+      // Click on the order link
+      log(`Clicking on order ${orderId}`);
+      orderLink.click();
+      
+      // Wait minimal time for page to load - we want to be fast
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Check if we're on the right page
+      if (!isOrderDetailPage()) {
+        throw new Error('Failed to navigate to order detail page');
+      }
+      
+      // Find appropriate button (Take Order or Place Bid)
+      let actionButton = document.querySelector('input.button[value="Take Order"]');
+      let actionType = 'take';
+      
+      if (!actionButton) {
+        actionButton = document.querySelector('input.button[value="Place Bid"]');
+        actionType = 'bid';
+      }
+      
+      if (actionButton) {
+        log(`Found ${actionType} button for order ${orderId}, clicking it`, 'success');
+        
+        // Increment counter
+        botState.ordersTaken++;
+        updateStats();
+        
+        // Show notification
+        showNotification('Order Taken', `Successfully ${actionType}ing order #${orderId}`, 'success');
+        
+        // Click the button - IMMEDIATELY
+        actionButton.click();
+        
+        // Play success sound - different from new order sound
+        if (botState.config.soundAlert) {
+          playOrderTakenSound();
+        }
+        
+        // Wait minimal time for submission
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Navigate back to orders page immediately
+        window.location.href = '/orders/available.html';
+      } else {
+        // Try to find and submit the form directly
+        const actionForm = document.querySelector('form.order--bid__top-buttons');
+        
+        if (actionForm) {
+          // Check form action to determine if it's take or bid
+          const formAction = actionForm.getAttribute('action') || '';
+          const actionTypeName = formAction.includes('apply') ? 'bid' : 'take';
+          
+          log(`Submitting ${actionTypeName} form for order ${orderId}`, 'success');
+          
+          // Increment counter
+          botState.ordersTaken++;
+          updateStats();
+          
+          // Show notification
+          showNotification('Order Taken', `Successfully ${actionTypeName}ing order #${orderId}`, 'success');
+          
+          // Play success sound - different from new order sound
+          if (botState.config.soundAlert) {
+            playOrderTakenSound();
+          }
+          
+          // Submit the form IMMEDIATELY
+          actionForm.submit();
+          
+          // Wait minimal time for submission
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          // Navigate back to orders page immediately
+          window.location.href = '/orders/available.html';
+        } else {
+          throw new Error('Could not find action button or form');
+        }
+      }
+    } catch (error) {
+      log(`Error processing order ${orderId}: ${error.message}`, 'error');
+      
+      // Show error notification
+      showNotification('Error', `Failed to process order #${orderId}: ${error.message}`, 'error');
+      
+      // Navigate back to orders page
+      window.location.href = '/orders/available.html';
+    } finally {
+      // Set a timeout to ensure we don't get stuck
+      setTimeout(() => {
+        if (botState.isProcessingOrder) {
+          log('Processing timeout reached, resetting state', 'warning');
+          botState.isProcessingOrder = false;
+        }
+      }, 5000); // 5 second timeout
+    }
+  }
+  
+  // Start the bot
+  function startBot() {
+    if (botState.isRunning) {
+      log('Bot is already running');
+      return;
+    }
+    
+    if (!isOrdersPage()) {
+      log('Cannot start bot - not on orders page', 'warning');
+      return;
+    }
+    
+    botState.isRunning = true;
+    log('Bot started', 'success');
+    
+    // Show notification
+    showNotification('UVO Assistant', 'Bot started successfully', 'success');
+    
+    // Show spinner
+    toggleBotSpinner(true);
+    
+    // Restore known orders from session storage if coming from a refresh
+    const storedOrders = sessionStorage.getItem('uvoAssistantKnownOrders');
+    if (storedOrders) {
+      try {
+        const parsedOrders = JSON.parse(storedOrders);
+        if (Array.isArray(parsedOrders)) {
+          parsedOrders.forEach(id => botState.knownOrderIds.add(id));
+          log(`Restored ${parsedOrders.length} known orders from previous session`);
+        }
+        sessionStorage.removeItem('uvoAssistantKnownOrders');
+      } catch (e) {
+        log(`Error restoring known orders: ${e.message}`, 'error');
+      }
+    }
+    
+    // Initial scan
+    scanCurrentOrders();
+    
+    // Initialize refresh countdown
+    botState.refreshCountdown = Math.ceil(botState.config.refreshInterval / 1000);
+    
+    // Start interval for checking DOM
+    botState.checkIntervalId = setInterval(checkForNewOrders, botState.config.checkInterval);
+    
+    // Start interval for background refresh
+    botState.refreshIntervalId = setInterval(backgroundRefresh, botState.config.refreshInterval);
+    
+    // Do an initial check
+    checkForNewOrders();
+    
+    // Clear the reload flag if it exists
+    sessionStorage.removeItem('uvoAssistantReload');
+    
+    return true;
+  }
+  
+  // Stop the bot
+  function stopBot() {
+    if (!botState.isRunning) {
+      log('Bot is not running');
+      return;
+    }
+    
+    botState.isRunning = false;
+    log('Bot stopped', 'info');
+    
+    // Show notification
+    showNotification('UVO Assistant', 'Bot paused', 'info');
+    
+    // Hide spinner
+    toggleBotSpinner(false);
+    
+    // Clear intervals
+    if (botState.checkIntervalId) {
+      clearInterval(botState.checkIntervalId);
+      botState.checkIntervalId = null;
+    }
+    
+    if (botState.refreshIntervalId) {
+      clearInterval(botState.refreshIntervalId);
+      botState.refreshIntervalId = null;
+    }
+    
+    return true;
+  }
+  
+  // Update bot configuration
+  function updateBotConfig(newConfig) {
+    const needsRefreshReset = 
+      newConfig.refreshInterval && 
+      newConfig.refreshInterval !== botState.config.refreshInterval;
+    
+    const needsCheckReset = 
+      newConfig.checkInterval && 
+      newConfig.checkInterval !== botState.config.checkInterval;
+    
+    // Update config
+    botState.config = { ...botState.config, ...newConfig };
+    
+    // Restart intervals if running and interval changed
+    if (botState.isRunning) {
+      if (needsCheckReset && botState.checkIntervalId) {
+        clearInterval(botState.checkIntervalId);
+        botState.checkIntervalId = setInterval(checkForNewOrders, botState.config.checkInterval);
+      }
+      
+      if (needsRefreshReset && botState.refreshIntervalId) {
+        clearInterval(botState.refreshIntervalId);
+        botState.refreshIntervalId = setInterval(backgroundRefresh, botState.config.refreshInterval);
+        botState.refreshCountdown = Math.ceil(botState.config.refreshInterval / 1000);
+        updateRefreshCountdown();
+      }
+    }
+    
+    log(`Bot configuration updated: Check interval = ${botState.config.checkInterval}ms, Refresh interval = ${botState.config.refreshInterval}ms, Min time = ${botState.config.minTimeHours}h, Hard Refresh = ${botState.config.hardRefresh}`);
+    
+    return true;
+  }
+  
+// Reset stats
+function resetStats() {
+    botState.ordersTaken = 0;
+    botState.ordersAvailable = 0;
+    botState.ordersNew = 0;
+    updateStats();
+    log('Statistics reset', 'info');
+    
+    return true;
+  }
+  
+  // Listen for messages from popup
+  chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
+    debugLog('Received message: ' + JSON.stringify(message));
+    
+    try {
+      switch (message.action) {
+        case 'startBot':
+          const startResult = startBot();
+          sendResponse({
+            success: startResult,
+            error: startResult ? null : 'Failed to start bot'
+          });
+          break;
+          
+        case 'stopBot':
+          const stopResult = stopBot();
+          sendResponse({
+            success: stopResult,
+            error: stopResult ? null : 'Failed to stop bot'
+          });
+          break;
+          
+        case 'updateConfig':
+          const updateResult = updateBotConfig(message.config);
+          sendResponse({
+            success: updateResult,
+            error: updateResult ? null : 'Failed to update config'
+          });
+          break;
+          
+        case 'getStatus':
+          sendResponse({
+            success: true,
+            status: {
+              isRunning: botState.isRunning,
+              ordersTaken: botState.ordersTaken,
+              ordersAvailable: botState.ordersAvailable,
+              ordersNew: botState.ordersNew,
+              lastCheck: botState.lastCheck,
+              isOnOrdersPage: isOrdersPage(),
+              config: botState.config
+            }
+          });
+          break;
+          
+        case 'resetStats':
+          const resetResult = resetStats();
+          sendResponse({
+            success: resetResult,
+            error: resetResult ? null : 'Failed to reset stats'
+          });
+          break;
+          
+        case 'refreshNow':
+          if (botState.isRunning && isOrdersPage()) {
+            if (message.hardRefresh || botState.config.hardRefresh) {
+              performHardRefresh();
+            } else {
+              backgroundRefresh();
+            }
+            sendResponse({ success: true });
+          } else {
+            sendResponse({ 
+              success: false, 
+              error: botState.isRunning ? 'Not on orders page' : 'Bot not running' 
+            });
+          }
+          break;
+          
+        default:
+          sendResponse({
+            success: false,
+            error: `Unknown action: ${message.action}`
+          });
+      }
+    } catch (error) {
+      console.error('Error handling message:', error);
+      sendResponse({
+        success: false,
+        error: error.message
+      });
+    }
+    
+    // Required for async sendResponse
+    return true;
+  });
+  
+  // Check if page loaded after refresh with pending order
+  function checkPendingOrder() {
+    const pendingOrderId = sessionStorage.getItem('uvoNewOrderId');
+    if (pendingOrderId) {
+      log(`Found pending order ${pendingOrderId} after page load`, 'info');
+      
+      // Schedule a check shortly after page load
+      setTimeout(() => {
+        if (botState.isRunning && isOrdersPage()) {
+          checkForNewOrders();
+        }
+      }, 1000);
+    }
+  }
+  
+  // Check if we're being loaded after a refresh triggered by the bot
+  function checkAutoRestart() {
+    if (sessionStorage.getItem('uvoAssistantReload') === 'true') {
+      log('Page reloaded by bot, auto-restarting', 'info');
+      
+      // Auto-start the bot if we're on the orders page
+      if (isOrdersPage()) {
+        // Start with a small delay to let page load fully
+        setTimeout(() => {
+          startBot();
+        }, 500);
+      }
+      
+      // Clear the flag
+      sessionStorage.removeItem('uvoAssistantReload');
+    }
+  }
+  
+  // Initialize when loaded
+  initialize();
+  
+  // Check for pending orders and auto-restart after page load
+  window.addEventListener('load', () => {
+    checkPendingOrder();
+    checkAutoRestart();
+  });

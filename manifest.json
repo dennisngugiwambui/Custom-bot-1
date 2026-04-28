@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "UvoCorp Order Bot",
+  "version": "1.0.0",
+  "description": "Automatically monitors and takes orders on UvoCorp based on language and deadline preferences",
+  "permissions": [
+    "storage",
+    "tabs",
+    "notifications",
+    "activeTab",
+    "scripting",
+    "contextMenus"
+  ],
+  "host_permissions": [
+    "https://www.uvocorp.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.uvocorp.com/orders/available.html"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.uvocorp.com/order/*.html"],
+      "js": ["order-detail.js"],
+      "run_at": "document_idle",
+      "css": ["order-detail.css"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["sounds/*", "icons/*"],
+      "matches": ["https://www.uvocorp.com/*"]
+    }
+  ]
+}

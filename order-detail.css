@@ -1,0 +1,156 @@
+/* UvoCorp Order Bot - Order Detail Styles */
+
+/* Notification styles */
+.uvo-notification {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background-color: #4f46e5;
+    color: white;
+    padding: 16px;
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    max-width: 350px;
+    animation: uvo-slide-in 0.4s cubic-bezier(0.17, 0.67, 0.32, 1.32) forwards;
+    transform-origin: bottom right;
+  }
+  
+  .uvo-notification.success {
+    background-color: #10b981;
+  }
+  
+  .uvo-notification.error {
+    background-color: #ef4444;
+  }
+  
+  .uvo-notification.warning {
+    background-color: #f59e0b;
+  }
+  
+  .uvo-notification-icon {
+    margin-right: 12px;
+    font-size: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  
+  .uvo-notification-content {
+    flex: 1;
+  }
+  
+  .uvo-notification-title {
+    font-weight: bold;
+    margin-bottom: 4px;
+    font-size: 16px;
+  }
+  
+  .uvo-notification-message {
+    font-size: 14px;
+    opacity: 0.95;
+  }
+  
+  .uvo-notification-close {
+    background: none;
+    border: none;
+    color: white;
+    opacity: 0.7;
+    cursor: pointer;
+    font-size: 18px;
+    padding: 8px;
+    margin-left: 8px;
+    transition: all 0.2s;
+    border-radius: 50%;
+  }
+  
+  .uvo-notification-close:hover {
+    opacity: 1;
+    background-color: rgba(255, 255, 255, 0.1);
+  }
+  
+  @keyframes uvo-slide-in {
+    0% { transform: translateX(120%) scale(0.8); opacity: 0; }
+    80% { transform: translateX(-5%) scale(1.05); opacity: 1; }
+    100% { transform: translateX(0) scale(1); opacity: 1; }
+  }
+  
+  @keyframes uvo-slide-out {
+    0% { transform: translateX(0) scale(1); opacity: 1; }
+    100% { transform: translateX(120%) scale(0.8); opacity: 0; }
+  }
+  
+  @keyframes uvo-pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+    100% { transform: scale(1); }
+  }
+  
+  .uvo-notification.uvo-closing {
+    animation: uvo-slide-out 0.3s ease-in forwards;
+  }
+  
+  /* Overlay styles */
+  .uvo-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.7);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 10000;
+    backdrop-filter: blur(2px);
+    animation: uvo-fade-in 0.3s forwards;
+  }
+  
+  .uvo-overlay-content {
+    background-color: white;
+    padding: 25px;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+    text-align: center;
+    max-width: 80%;
+    animation: uvo-scale-in 0.3s forwards;
+  }
+  
+  @keyframes uvo-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  
+  @keyframes uvo-scale-in {
+    from { transform: scale(0.8); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+  
+  .uvo-overlay-icon {
+    font-size: 50px;
+    color: #4f46e5;
+    margin-bottom: 20px;
+  }
+  
+  .uvo-overlay-message {
+    font-size: 18px;
+    margin-bottom: 15px;
+    color: #1f2937;
+  }
+  
+  .uvo-overlay-spinner {
+    display: inline-block;
+    width: 32px;
+    height: 32px;
+    border: 3px solid rgba(79, 70, 229, 0.3);
+    border-radius: 50%;
+    border-top-color: #4f46e5;
+    animation: uvo-spin 1s linear infinite;
+    margin: 16px 0;
+  }
+  
+  @keyframes uvo-spin {
+    to { transform: rotate(360deg); }
+  }

@@ -1,0 +1,83 @@
+# UVO Order Assistant
+
+A Chrome extension that automatically monitors and takes new orders on the UVO Corp platform.
+
+## Key Features
+
+- Automatically captures new orders that match your criteria
+- Regularly refreshes the page to see new orders
+- Configurable settings for refresh interval and time requirements
+- Tracks taken orders and provides notifications
+- Easy-to-use interface with real-time updates
+
+## Installation
+
+1. Download all the files and place them in a folder
+2. Open Chrome and go to `chrome://extensions/`
+3. Enable "Developer mode" in the top-right corner
+4. Click "Load unpacked" and select the folder containing the extension files
+5. The UVO Order Assistant icon should now appear in your browser toolbar
+
+## Files Required
+
+Make sure you have all these files in your extension folder:
+
+- `manifest.json` - Extension configuration file
+- `popup.html` - Extension popup interface
+- `popup.css` - Styles for the popup
+- `popup.js` - JavaScript for the popup
+- `content.js` - Content script that runs on UVO Corp pages
+- `background.js` - Background script that handles events
+- `icons/` folder containing:
+  - `icon16.png`
+  - `icon32.png`
+  - `icon48.png`
+  - `icon128.png`
+  - `success-svg.png`
+  - `error-svg.png`
+  - `info-svg.png`
+  - `pause-svg.png`
+  - `spinner-svg.png`
+  - `warning-svg.png`
+
+## How to Use
+
+1. Navigate to the UVO Corp orders page (`uvocorp.com/orders/available.html`)
+2. Click the UVO Order Assistant icon in your browser toolbar
+3. Use the toggle switch at the top to start/stop the bot
+4. Configure the settings as needed:
+   - **Check Interval**: How often the bot scans the current page (in seconds)
+   - **Page Refresh**: How often the page is refreshed to see new orders (in seconds)
+   - **Min. Time Remaining**: Minimum deadline time required for orders (in hours)
+   - **Sound Alert**: Enable/disable sound notifications for new orders
+   - **Auto-pause**: Automatically pause when leaving the orders page
+
+5. Use the "Refresh Now" button to manually refresh the page if needed
+6. The activity log at the bottom shows a history of the bot's actions
+
+## Important Notes
+
+- The bot will only process orders marked as "new" on the UVO Corp platform
+- Orders must have at least the specified minimum time remaining to be processed
+- The bot automatically pauses when you navigate away from the orders page
+- You can see how many orders have been taken in the stats section
+- When the bot is running, a small spinner will appear in the bottom-left corner of the page
+
+## Troubleshooting
+
+- If the bot isn't working, make sure you're on the correct UVO Corp orders page
+- Try refreshing the page manually if you don't see any new orders
+- If the extension isn't responding, try reloading it from the Chrome extensions page
+- Check the activity log for any error messages
+- Make sure your Chrome is up to date
+
+## Privacy & Security
+
+- This extension only operates on the UVO Corp website
+- All data is stored locally in your browser
+- No data is sent to external servers
+- The extension only needs permissions to access and modify UVO Corp pages
+
+## Support
+
+If you encounter issues or have suggestions for improvements, please contact the developer.
